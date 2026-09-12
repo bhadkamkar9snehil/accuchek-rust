@@ -59,7 +59,7 @@ mod tests {
     }
 
     #[test]
-    fn source_status_is_retained_but_unknown_status_is_not_in_headline_analysis() {
+    fn nonzero_source_status_is_retained_and_included_until_semantics_are_known() {
         let storage = memory_storage();
         storage
             .import_readings(&[
@@ -72,9 +72,11 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[1].status, 0x0040);
 
+        // Non-zero status occurs on valid historical Accu-Chek records and may encode context.
+        // Until a specific exclusion bit is positively identified, analysis must not drop it.
         let analysis = storage.get_analysis_readings().unwrap();
-        assert_eq!(analysis.len(), 1);
-        assert_eq!(analysis[0].mg_dl, 101);
+        assert_eq!(analysis.len(), 2);
+        assert_eq!(analysis[1].mg_dl, 222);
     }
 
     #[test]
