@@ -103,28 +103,21 @@ impl Storage {
     }
 
     pub fn get_all_readings(&self) -> Result<Vec<StoredReading>> {
-        self.query_readings(false)
-    }
-
-    /// Readings used for numerical summaries. Unknown/nonzero source status is retained in the
-    /// database and raw-data UI, but excluded from headline analysis until its semantics are known.
-    pub fn get_analysis_readings(&self) -> Result<Vec<StoredReading>> {
-        self.query_readings(true)
-    }
-
-    fn query_readings(&self, analysis_only: bool) -> Result<Vec<StoredReading>> {
-        let sql = if analysis_only {
+        let mut stmt = self.conn.prepare(
             "SELECT id, epoch, timestamp, mg_dl, mmol_l, raw_value, status, range_state,
                     device_key, occurrence, note, tags, imported_at
-             FROM readings WHERE status = 0 ORDER BY epoch, id"
-        } else {
-            "SELECT id, epoch, timestamp, mg_dl, mmol_l, raw_value, status, range_state,
-                    device_key, occurrence, note, tags, imported_at
-             FROM readings ORDER BY epoch, id"
-        };
-        let mut stmt = self.conn.prepare(sql)?;
+             FROM readings ORDER BY epoch, id",
+        )?;
         stmt.query_map([], Self::row_to_stored_reading)?
             .collect::<Result<Vec<_>>>()
+    }
+
+    /// At present all meter records are included in numerical analysis. The raw IEEE 11073
+    /// status word is preserved because real Accu-Chek meters use non-zero values for valid
+    /// measurements/context. We will only exclude records after a specific status meaning is
+    /// positively identified and tested.
+    pub fn get_analysis_readings(&self) -> Result<Vec<StoredReading>> {
+        self.get_all_readings()
     }
 
     pub fn count(&self) -> Result<i64> {
@@ -135,15 +128,15 @@ impl Storage {
     pub fn get_all_values(&self) -> Result<Vec<u16>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT mg_dl FROM readings WHERE status = 0 ORDER BY epoch, id")?;
+            .prepare("SELECT mg_dl FROM readings ORDER BY epoch, id")?;
         stmt.query_map([], |row| row.get::<_, u16>(0))?
             .collect::<Result<Vec<_>>>()
     }
 
     pub fn get_all_values_both(&self) -> Result<(Vec<u16>, Vec<f64>)> {
-        let mut stmt = self.conn.prepare(
-            "SELECT mg_dl, mmol_l FROM readings WHERE status = 0 ORDER BY epoch, id",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT mg_dl, mmol_l FROM readings ORDER BY epoch, id")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, u16>(0)?, row.get::<_, f64>(1)?))
         })?;
