@@ -1,3 +1,17 @@
-vendor_0x173a_device_0x21d5 1 # roche accu-Chek model  929
-vendor_0x173a_device_0x21d7 1 # some other similar model with product id 0x21d7 that should also work with this code
-vendor_0x173a_device_0x21d8 1 # Roche Relion Platinum model 982
+# Accu-Chek Configuration File
+#
+# Device whitelist: vendor_0xXXXX_device_0xYYYY 1
+# Use 1 to enable, 0 to disable.
+#
+# Roche uses USB vendor ID 0x173a for this PHDC/WinUSB meter family.
+# These IDs are cross-checked against Tidepool's maintained Roche driver/INF.
+
+vendor_0x173a_device_0x21cf 1 # Accu-Chek Aviva Connect
+vendor_0x173a_device_0x21d5 1 # Accu-Chek Guide
+vendor_0x173a_device_0x21d6 1 # Accu-Chek Guide Me
+vendor_0x173a_device_0x21d7 1 # Accu-Chek Instant
+vendor_0x173a_device_0x21d8 1 # ReliOn Platinum
+vendor_0x173a_device_0x21db 1 # Accu-Chek Guide Link
+
+# Optional: Custom database path (uncomment to override default)
+# database_path C:\path\to\custom\accuchek.db
