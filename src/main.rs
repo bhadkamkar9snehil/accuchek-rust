@@ -24,6 +24,8 @@ mod units;
 mod stats;
 mod storage;
 mod gui;
+mod gui_theme;
+mod gui_charts;
 mod export;
 
 use std::env;
