@@ -118,6 +118,7 @@ dependencies = [
  "egui_plot",
  "env_logger",
  "log",
+ "png 0.17.16",
  "printpdf",
  "rfd",
  "rusb",

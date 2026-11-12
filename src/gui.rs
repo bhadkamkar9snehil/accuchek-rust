@@ -241,6 +241,9 @@ pub struct AccuChekApp {
     status_note: String,
     status_error: bool,
     viewport_h: f32,
+    shot_dir: Option<std::path::PathBuf>,
+    shot_step: usize,
+    shot_wait: u32,
     
     // Sync state
     sync_receiver: Option<Receiver<SyncMessage>>,
@@ -277,6 +280,9 @@ impl Default for AccuChekApp {
             status_note: String::new(),
             status_error: false,
             viewport_h: 800.0,
+            shot_dir: screenshot_dir(),
+            shot_step: 0,
+            shot_wait: 0,
             sync_receiver: None,
             sync_status: SyncStatus::Idle,
             last_sync_message: String::new(),
@@ -512,6 +518,7 @@ impl AccuChekApp {
 
 impl eframe::App for AccuChekApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drive_screenshots(ctx);
         self.check_sync_status();
 
         if self.sync_status == SyncStatus::Syncing {
@@ -562,6 +569,76 @@ impl eframe::App for AccuChekApp {
             });
 
         self.render_notifications(ctx);
+    }
+}
+
+// ============= Screenshot mode (README images from demo data) =============
+
+/// Only active when both variables are set, so it can never capture the real database.
+fn screenshot_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("ACCUCHEK_DATA_DIR")?;
+    std::env::var_os("ACCUCHEK_SCREENSHOT_DIR").map(std::path::PathBuf::from)
+}
+
+const SHOTS: [&str; 9] = [
+    "overview", "trend", "time-bands", "time-of-day", "day-by-day", "distribution", "calendar", "readings", "overview-dark",
+];
+
+fn save_png(path: &std::path::Path, img: &egui::ColorImage) -> std::io::Result<()> {
+    let [w, h] = img.size;
+    let mut bytes = Vec::with_capacity(w * h * 4);
+    for p in &img.pixels {
+        bytes.extend_from_slice(&p.to_array());
+    }
+    let file = std::io::BufWriter::new(fs::File::create(path)?);
+    let mut enc = png::Encoder::new(file, w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().map_err(std::io::Error::other)?;
+    writer.write_image_data(&bytes).map_err(std::io::Error::other)
+}
+
+impl AccuChekApp {
+    fn drive_screenshots(&mut self, ctx: &egui::Context) {
+        let Some(dir) = self.shot_dir.clone() else { return };
+        let _ = fs::create_dir_all(&dir);
+        for e in ctx.input(|i| i.events.clone()) {
+            if let egui::Event::Screenshot { image, .. } = e {
+                if let Some(name) = SHOTS.get(self.shot_step) {
+                    let _ = save_png(&dir.join(format!("{}.png", name)), &image);
+                }
+                self.shot_step += 1;
+                self.shot_wait = 0;
+            }
+        }
+        if self.shot_step >= SHOTS.len() {
+            std::process::exit(0);
+        }
+        let (tab, view, light) = match self.shot_step {
+            0 => (Tab::Overview, ChartView::Trend, true),
+            1 => (Tab::Analysis, ChartView::Trend, true),
+            2 => (Tab::Analysis, ChartView::Bands, true),
+            3 => (Tab::Analysis, ChartView::Profile, true),
+            4 => (Tab::Analysis, ChartView::Daily, true),
+            5 => (Tab::Analysis, ChartView::Distribution, true),
+            6 => (Tab::Analysis, ChartView::Calendar, true),
+            7 => (Tab::Readings, ChartView::Trend, true),
+            _ => (Tab::Overview, ChartView::Trend, false),
+        };
+        self.current_tab = tab;
+        self.current_chart_view = view;
+        if is_light() != light {
+            set_light(light);
+            apply(ctx);
+        }
+        if self.shot_step == 7 && self.selected_reading.is_none() {
+            self.selected_reading = Some(1);
+        }
+        self.shot_wait += 1;
+        if self.shot_wait == 10 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+        }
+        ctx.request_repaint();
     }
 }
 
@@ -1294,7 +1371,7 @@ fn open_file(path: &std::path::Path) {
 pub fn run_gui(db_path: String) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 860.0])
+            .with_inner_size(if screenshot_dir().is_some() { [1500.0, 930.0] } else { [1280.0, 860.0] })
             .with_min_inner_size([1000.0, 640.0])
             .with_transparent(false),
         vsync: true,

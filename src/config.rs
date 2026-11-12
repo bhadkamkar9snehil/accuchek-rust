@@ -11,7 +11,11 @@ use crate::error::AccuChekError;
 /// - Windows: C:\Users\<user>\AppData\Roaming\accuchek
 /// - Linux: ~/.local/share/accuchek
 /// - macOS: ~/Library/Application Support/accuchek
+/// Override with the `ACCUCHEK_DATA_DIR` environment variable.
 pub fn get_data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("ACCUCHEK_DATA_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
     let base = dirs::data_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
         .unwrap_or_else(|| PathBuf::from("."));

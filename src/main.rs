@@ -27,6 +27,7 @@ mod gui;
 mod gui_theme;
 mod gui_charts;
 mod export;
+mod demo;
 
 use std::env;
 use log::{info, warn};
@@ -133,6 +134,10 @@ fn main() -> Result<(), AccuChekError> {
         Some("--version") | Some("-V") => {
             println!("accuchek {}", env!("CARGO_PKG_VERSION"));
         }
+        Some("demo") => {
+            let n = demo::generate(&db_path)?;
+            eprintln!("Wrote {} synthetic demo readings to {}", n, db_path);
+        }
         Some("path") | Some("paths") => {
             cmd_show_paths();
         }
@@ -207,10 +212,12 @@ fn print_help() {
     eprintln!("  accuchek                    Launch GUI application");
     eprintln!("  accuchek sync [device_idx]  Download from device (CLI mode)");
     eprintln!("  accuchek path               Show data file locations");
+    eprintln!("  accuchek demo               Write synthetic demo data (needs ACCUCHEK_DATA_DIR)");
     eprintln!("  accuchek help               Show this help");
     eprintln!();
     eprintln!("ENVIRONMENT:");
     eprintln!("  ACCUCHEK_DBG=1              Enable debug output");
+    eprintln!("  ACCUCHEK_DATA_DIR=<dir>     Use <dir> instead of the OS data directory");
     eprintln!();
     eprintln!("DATA LOCATIONS:");
     eprintln!("  Database:  {}", default_database_path().display());
