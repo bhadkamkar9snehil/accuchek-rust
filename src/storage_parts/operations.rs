@@ -84,7 +84,21 @@ impl Storage {
             }
             *occurrence = occurrence.saturating_add(1);
         }
+        self.auto_tag_fasting()?;
         Ok(count)
+    }
+
+    /// Tag early-morning readings (04:00-08:59 meter time) as `fasting`.
+    /// Readings that already carry a fasting or meal tag are left alone.
+    pub fn auto_tag_fasting(&self) -> Result<usize> {
+        self.conn.execute(
+            "UPDATE readings
+             SET tags = CASE WHEN tags IS NULL OR trim(tags) = '' THEN 'fasting' ELSE tags || ',fasting' END
+             WHERE CAST(substr(timestamp, 12, 2) AS INTEGER) BETWEEN 4 AND 8
+               AND (tags IS NULL OR trim(tags) = ''
+                    OR (lower(tags) NOT LIKE '%fasting%' AND lower(tags) NOT LIKE '%meal%'))",
+            [],
+        )
     }
 
     pub fn update_note(&self, id: i64, note: &str) -> Result<usize> {

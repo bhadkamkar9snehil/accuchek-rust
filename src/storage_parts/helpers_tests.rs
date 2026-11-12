@@ -37,6 +37,23 @@ mod tests {
     }
 
     #[test]
+    fn early_morning_readings_are_auto_tagged_fasting_once() {
+        let storage = memory_storage();
+        let rows = vec![
+            reading("2026-09-13T07:30:00", 101, 0),
+            reading("2026-09-13T09:00:00", 110, 0),
+            reading("2026-09-13T03:59:00", 95, 0),
+        ];
+        storage.import_readings(&rows).unwrap();
+        storage.import_readings(&rows).unwrap();
+        let all = storage.get_all_readings().unwrap();
+        let tag = |ts: &str| all.iter().find(|r| r.timestamp == ts).unwrap().tags.clone();
+        assert_eq!(tag("2026-09-13T07:30:00").as_deref(), Some("fasting"));
+        assert_eq!(tag("2026-09-13T09:00:00"), None);
+        assert_eq!(tag("2026-09-13T03:59:00"), None);
+    }
+
+    #[test]
     fn repeat_sync_is_idempotent() {
         let storage = memory_storage();
         let rows = vec![reading("2026-09-13T08:00:00", 101, 0)];

@@ -9,7 +9,7 @@
 //! - PDF export functionality
 
 use eframe::egui;
-use egui::{vec2, Color32, Rect, Stroke};
+use egui::{pos2, vec2, Color32, Rect, Stroke};
 use crate::gui_charts::*;
 use crate::gui_theme::*;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -35,6 +35,12 @@ type ReadingListItem = (usize, String, bool, Option<String>, Option<String>);
 pub struct AppSettings {
     pub thresholds: Thresholds,
     pub glucose_unit: GlucoseUnit,
+    #[serde(default = "default_light")]
+    pub light: bool,
+}
+
+fn default_light() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -42,6 +48,7 @@ impl Default for AppSettings {
         Self {
             thresholds: Thresholds::default(),
             glucose_unit: GlucoseUnit::MgDl,
+            light: true,
         }
     }
 }
@@ -157,6 +164,7 @@ impl RangeSel {
 #[derive(PartialEq, Clone, Copy)]
 enum ChartView {
     Trend,
+    Bands,
     Profile,
     Distribution,
     Daily,
@@ -232,6 +240,7 @@ pub struct AccuChekApp {
     days: Vec<Day>,
     status_note: String,
     status_error: bool,
+    viewport_h: f32,
     
     // Sync state
     sync_receiver: Option<Receiver<SyncMessage>>,
@@ -267,6 +276,7 @@ impl Default for AccuChekApp {
             days: Vec::new(),
             status_note: String::new(),
             status_error: false,
+            viewport_h: 800.0,
             sync_receiver: None,
             sync_status: SyncStatus::Idle,
             last_sync_message: String::new(),
@@ -280,15 +290,18 @@ impl Default for AccuChekApp {
 
 impl AccuChekApp {
     pub fn new(cc: &eframe::CreationContext<'_>, db_path: String) -> Self {
-        apply(&cc.egui_ctx);
-        
         let settings = AppSettings::load();
+        set_light(settings.light);
+        apply(&cc.egui_ctx);
         let mut app = Self {
             db_path,
             settings,
             ..Default::default()
         };
         
+        if let Ok(storage) = Storage::new(&app.db_path) {
+            let _ = storage.auto_tag_fasting();
+        }
         app.refresh_data();
         app
     }
@@ -506,24 +519,24 @@ impl eframe::App for AccuChekApp {
         }
 
         egui::TopBottomPanel::top("rail")
-            .frame(egui::Frame::new().fill(NIGHT).stroke(Stroke::new(1.0, RULE)).inner_margin(egui::Margin::symmetric(16, 10)))
+            .frame(egui::Frame::new().fill(night()).stroke(Stroke::new(1.0, rule())).inner_margin(egui::Margin::symmetric(16, 10)))
             .show(ctx, |ui| self.show_top_rail(ui));
 
         egui::TopBottomPanel::bottom("bus")
-            .frame(egui::Frame::new().fill(NIGHT).stroke(Stroke::new(1.0, RULE)).inner_margin(egui::Margin::symmetric(16, 6)))
+            .frame(egui::Frame::new().fill(night()).stroke(Stroke::new(1.0, rule())).inner_margin(egui::Margin::symmetric(16, 6)))
             .show(ctx, |ui| self.show_status_bus(ui));
 
         egui::SidePanel::left("nav")
             .exact_width(160.0)
             .resizable(false)
-            .frame(egui::Frame::new().fill(Color32::from_rgb(0x1C, 0x1C, 0x1B)).stroke(Stroke::new(1.0, RULE)).inner_margin(egui::Margin::symmetric(0, 12)))
+            .frame(egui::Frame::new().fill(nav_bg()).stroke(Stroke::new(1.0, rule())).inner_margin(egui::Margin::symmetric(0, 12)))
             .show(ctx, |ui| self.show_nav(ui));
 
         if self.current_tab == Tab::Readings {
             egui::SidePanel::right("detail")
                 .exact_width(330.0)
                 .resizable(false)
-                .frame(egui::Frame::new().fill(PLATE).stroke(Stroke::new(1.0, RULE)).inner_margin(egui::Margin::same(16)))
+                .frame(egui::Frame::new().fill(plate()).stroke(Stroke::new(1.0, rule())).inner_margin(egui::Margin::same(16)))
                 .show(ctx, |ui| self.show_reading_detail(ui));
         }
 
@@ -534,8 +547,9 @@ impl eframe::App for AccuChekApp {
             self.show_export_dialog_window(ctx);
         }
 
+        self.viewport_h = (ctx.available_rect().height() - 28.0).max(300.0);
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(CARBON).inner_margin(egui::Margin::same(20)))
+            .frame(egui::Frame::new().fill(carbon()).inner_margin(egui::Margin::same(14)))
             .show(ctx, |ui| match self.current_tab {
                 Tab::Readings => self.show_readings(ui),
                 tab => {
@@ -577,20 +591,26 @@ impl AccuChekApp {
 
     fn show_top_rail(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("ACCU-CHEK").font(mono(15.0)).color(PAPER).strong());
-            ui.label(egui::RichText::new("LOCAL  /  PERSONAL GLUCOSE INSTRUMENT").font(mono(10.0)).color(INK_MUTED));
+            ui.label(egui::RichText::new("ACCU-CHEK").font(mono(15.0)).color(paper()).strong());
             ui.add_space(12.0);
             let (c, t) = match self.sync_status {
-                SyncStatus::Idle => (INK_MUTED, "USB IDLE"),
-                SyncStatus::Syncing => (TANGERINE, "SYNCING"),
-                SyncStatus::Success => (G_OK, "SYNC OK"),
-                SyncStatus::Error => (G_LOW, "SYNC FAILED"),
+                SyncStatus::Idle => (ink_muted(), "USB IDLE"),
+                SyncStatus::Syncing => (tangerine(), "SYNCING"),
+                SyncStatus::Success => (g_ok(), "SYNC OK"),
+                SyncStatus::Error => (g_low(), "SYNC FAILED"),
             };
             lamp(ui, c, t);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let syncing = self.sync_status == SyncStatus::Syncing;
                 if key(ui, if syncing { "SYNCING..." } else { "SYNC DEVICE" }, true, !syncing) {
                     self.start_sync();
+                }
+                ui.add_space(6.0);
+                if key(ui, if is_light() { "DARK" } else { "LIGHT" }, false, true) {
+                    self.settings.light = !self.settings.light;
+                    set_light(self.settings.light);
+                    apply(ui.ctx());
+                    self.settings.save();
                 }
                 ui.add_space(8.0);
                 if matches!(self.current_tab, Tab::Overview | Tab::Analysis) {
@@ -600,7 +620,6 @@ impl AccuChekApp {
                         self.range = r;
                         self.rebuild_view();
                     }
-                    label(ui, "PERIOD");
                 }
             });
         });
@@ -609,16 +628,16 @@ impl AccuChekApp {
     fn show_status_bus(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let has = !self.data.readings.is_empty();
-            lamp(ui, if has { G_OK } else { INK_MUTED }, if has { "DB HEALTHY" } else { "DB EMPTY" });
+            lamp(ui, if has { g_ok() } else { ink_muted() }, if has { "DB HEALTHY" } else { "DB EMPTY" });
             ui.add_space(10.0);
             let n = self.data.readings.len();
-            ui.label(egui::RichText::new(format!("{} READINGS STORED", n)).font(mono(10.5)).color(INK_DIM));
+            ui.label(egui::RichText::new(format!("{} READINGS STORED", n)).font(mono(10.5)).color(ink_dim()));
             if let Some(l) = self.data.readings.last() {
                 ui.add_space(10.0);
-                ui.label(egui::RichText::new(format!("LATEST {}", l.timestamp.replace('T', " "))).font(mono(10.5)).color(INK_DIM));
+                ui.label(egui::RichText::new(format!("LATEST {}", l.timestamp.replace('T', " "))).font(mono(10.5)).color(ink_dim()));
             }
             ui.add_space(10.0);
-            let c = if self.status_error { G_LOW } else { INK_DIM };
+            let c = if self.status_error { g_low() } else { ink_dim() };
             let txt = if self.sync_status == SyncStatus::Syncing {
                 self.last_sync_message.clone()
             } else {
@@ -638,13 +657,13 @@ impl AccuChekApp {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), egui::Sense::click());
             let sel = self.current_tab == tab;
             if sel {
-                ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(0x3A, 0x36, 0x2E));
-                ui.painter().rect_filled(Rect::from_min_size(rect.min, vec2(3.0, rect.height())), 0.0, TANGERINE);
+                ui.painter().rect_filled(rect, 0.0, sel_bg());
+                ui.painter().rect_filled(Rect::from_min_size(rect.min, vec2(3.0, rect.height())), 0.0, tangerine());
             } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(0x26, 0x26, 0x25));
+                ui.painter().rect_filled(rect, 0.0, hover_bg());
             }
-            ui.painter().text(rect.left_center() + vec2(16.0, 0.0), egui::Align2::LEFT_CENTER, code, mono(10.0), if sel { TANGERINE } else { INK_MUTED });
-            ui.painter().text(rect.left_center() + vec2(42.0, 0.0), egui::Align2::LEFT_CENTER, name.to_uppercase(), mono(12.0), if sel { PAPER } else { INK_DIM });
+            ui.painter().text(rect.left_center() + vec2(16.0, 0.0), egui::Align2::LEFT_CENTER, code, mono(10.0), if sel { tangerine() } else { ink_muted() });
+            ui.painter().text(rect.left_center() + vec2(42.0, 0.0), egui::Align2::LEFT_CENTER, name.to_uppercase(), mono(12.0), if sel { paper() } else { ink_dim() });
             if resp.clicked() {
                 self.current_tab = tab;
             }
@@ -664,9 +683,7 @@ impl AccuChekApp {
     fn show_empty(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(80.0);
-            ui.label(egui::RichText::new("NO READINGS STORED").font(mono(14.0)).color(PAPER).strong());
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Connect the meter by USB, then run a sync. Readings stay on this computer.").color(INK_DIM));
+            ui.label(egui::RichText::new("NO READINGS STORED").font(mono(14.0)).color(paper()).strong());
             ui.add_space(16.0);
             if key(ui, "SYNC DEVICE", true, self.sync_status != SyncStatus::Syncing) {
                 self.start_sync();
@@ -676,6 +693,41 @@ impl AccuChekApp {
 
     // ----- Overview -----
 
+    fn kpi_row(&self, ui: &mut egui::Ui, cx: &Cx) {
+        let n_all = self.data.readings.len();
+        let Some(latest) = self.data.readings.last() else { return };
+        let class = cx.th.classify(latest.mg_dl);
+        let recent: Vec<(f64, GlucoseRange)> = self.data.readings[n_all.saturating_sub(24)..]
+            .iter()
+            .map(|r| (match cx.unit { GlucoseUnit::MgDl => r.mg_dl as f64, GlucoseUnit::MmolL => r.mmol_l }, cx.th.classify(r.mg_dl)))
+            .collect();
+        let s = summarize(&self.pts, cx);
+        let tail = &self.days[self.days.len().saturating_sub(30)..];
+        let means: Vec<f64> = tail.iter().map(|d| d.mean).collect();
+        let spans: Vec<f64> = tail.iter().map(|d| d.max - d.min).collect();
+        let ins: Vec<f64> = tail.iter().map(|d| d.in_range_pct()).collect();
+        let lows: Vec<f64> = tail.iter().map(|d| (d.counts[0] + d.counts[1]) as f64).collect();
+        let h = 84.0;
+        ui.columns(6, |c| {
+            kpi(&mut c[0], "LATEST", &cx.unit.format_value(latest.mg_dl, latest.mmol_l), range_color(class), range_color(class), KpiViz::Strip(&recent), cx, h);
+            match &s {
+                Some(s) => {
+                    kpi(&mut c[1], "MEAN", &cx.fmt(s.mean), cyan(), paper(), KpiViz::Line(&means), cx, h);
+                    kpi(&mut c[2], "MEDIAN", &cx.fmt(s.median), cyan(), paper(), KpiViz::Bullet([s.min, s.q1, s.median, s.q3, s.max]), cx, h);
+                    kpi(&mut c[3], "CV %", &format!("{:.0}", s.cv), lavender(), paper(), KpiViz::Line(&spans), cx, h);
+                    kpi(&mut c[4], "IN RANGE %", &format!("{:.0}", s.counts[2] as f64 / s.n as f64 * 100.0), g_ok(), g_ok(), KpiViz::Line(&ins), cx, h);
+                    let nl = s.counts[0] + s.counts[1];
+                    kpi(&mut c[5], "LOWS", &format!("{}", nl), g_low(), if nl > 0 { g_low() } else { paper() }, KpiViz::Line(&lows), cx, h);
+                }
+                None => {
+                    for (i, l) in ["MEAN", "MEDIAN", "CV %", "IN RANGE %", "LOWS"].iter().enumerate() {
+                        kpi(&mut c[i + 1], l, "-", ink_muted(), ink_muted(), KpiViz::None, cx, h);
+                    }
+                }
+            }
+        });
+    }
+
     fn show_overview(&mut self, ui: &mut egui::Ui) {
         if self.data.readings.is_empty() {
             self.show_empty(ui);
@@ -683,112 +735,21 @@ impl AccuChekApp {
         }
         let cx = self.cx();
         let period = self.range.label();
-        let latest = self.data.readings.last().cloned().unwrap();
-        let class = cx.th.classify(latest.mg_dl);
-        let lc = range_color(class);
-        let ins = insights(&self.pts, &self.prior, period, &cx);
-        let summ = summarize(&self.pts, &cx);
-        let psumm = summarize(&self.prior, &cx);
-        let hero_val = cx.unit.format_value(latest.mg_dl, latest.mmol_l);
+        self.kpi_row(ui, &cx);
+        ui.add_space(10.0);
 
-        ui.columns(2, |cols| {
-            egui::Frame::new()
-                .fill(WELL)
-                .stroke(Stroke::new(1.0, RULE))
-                .corner_radius(radius())
-                .inner_margin(egui::Margin::same(20))
-                .show(&mut cols[0], |ui| {
-                    ui.set_min_height(150.0);
-                    ui.set_width(ui.available_width());
-                    label(ui, "Latest reading");
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(hero_val).font(sans(64.0)).color(lc));
-                        ui.vertical(|ui| {
-                            ui.add_space(30.0);
-                            ui.label(egui::RichText::new(cx.unit_label()).font(mono(12.0)).color(INK_DIM));
-                            ui.label(egui::RichText::new(class_name(class)).font(mono(11.0)).color(lc).strong());
-                        });
-                    });
-                    evidence(ui, &format!("{}   METER TIME", latest.timestamp.replace('T', " ")));
-                });
-            plate().show(&mut cols[1], |ui| {
-                ui.set_min_height(150.0);
-                ui.set_width(ui.available_width());
-                label(ui, "What the readings show");
-                if let Some(i) = ins.first() {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(&i.head).font(sans(22.0)).color(PAPER));
-                    ui.add_space(4.0);
-                    evidence(ui, &i.evidence);
-                } else {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(format!("NO READINGS IN THE LAST {}", period)).font(mono(12.0)).color(INK_DIM));
-                    evidence(ui, "CHOOSE A LONGER PERIOD");
-                }
-            });
-        });
-
-        let Some(s) = summ else { return };
-        ui.add_space(12.0);
-
-        let (in_pct, in_n) = (s.counts[2] as f64 / s.n as f64 * 100.0, s.counts[2]);
-        let delta = |cur: f64, prev: Option<f64>, dec: usize| -> String {
-            match prev {
-                Some(p) => format!("{:+.*} VS PRIOR {}", dec, cur - p, period),
-                None => format!("N={}  {}", s.n, period),
-            }
-        };
-        let dec = if cx.unit == GlucoseUnit::MgDl { 0 } else { 1 };
-        ui.columns(4, |cols| {
-            metric(&mut cols[0], "Mean", &cx.fmt(s.mean), cx.unit_label(), &delta(s.mean, psumm.as_ref().map(|p| p.mean), dec), CYAN);
-            metric(&mut cols[1], "Median", &cx.fmt(s.median), cx.unit_label(), &format!("IQR {}-{}", cx.fmt(s.q1), cx.fmt(s.q3)), CYAN);
-            metric(&mut cols[2], "Variability CV", &format!("{:.1}", s.cv), "%", &format!("SD {}  RANGE {}-{}", cx.fmt(s.sd), cx.fmt(s.min), cx.fmt(s.max)), LAVENDER);
-            metric(&mut cols[3], "In sampled range", &format!("{:.0}", in_pct), "%", &format!("{} OF {}  {}", in_n, s.n, cx.th.format_range(cx.unit)), G_OK);
-        });
-
-        ui.add_space(12.0);
-        plate().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            label(ui, &format!("Sampled range  {}  N={}", period, s.n));
-            ui.add_space(4.0);
-            sampled_range(ui, &self.pts, &cx);
-        });
-
-        ui.add_space(12.0);
-        trend(ui, &self.pts, period, &cx, 280.0);
-
-        ui.add_space(12.0);
-        plate().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            label(ui, "Patterns found");
-            for i in ins.iter().skip(1) {
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new(&i.head).font(sans(15.0)).color(PAPER));
-                evidence(ui, &i.evidence);
-            }
-            ui.add_space(6.0);
-            evidence(ui, "DESCRIPTIVE SUMMARY OF STORED READINGS. NOT MEDICAL ADVICE.");
-        });
-
-        ui.add_space(12.0);
-        plate().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            label(ui, "Recent readings");
-            ui.add_space(4.0);
-            egui::Grid::new("recent").num_columns(4).spacing([28.0, 6.0]).show(ui, |ui| {
-                for h in ["TIME", cx.unit_label(), "STATUS", "NOTE"] {
-                    label(ui, h);
-                }
-                ui.end_row();
-                for r in self.data.readings.iter().rev().take(8) {
-                    let c = range_color(cx.th.classify(r.mg_dl));
-                    ui.label(egui::RichText::new(r.timestamp.replace('T', " ")).font(mono(12.0)).color(INK_DIM));
-                    ui.label(egui::RichText::new(cx.unit.format_value(r.mg_dl, r.mmol_l)).font(sans(15.0)).color(c));
-                    ui.label(egui::RichText::new(class_name(cx.th.classify(r.mg_dl))).font(mono(10.5)).color(c));
-                    ui.label(egui::RichText::new(r.note.as_deref().unwrap_or("-")).color(RASPBERRY));
-                    ui.end_row();
-                }
-            });
+        let rest = (self.viewport_h - 84.0 - 20.0).max(520.0);
+        let trend_h = (rest * 0.45).max(230.0);
+        let low_h = (rest - trend_h - 20.0).max(260.0);
+        let pts = &self.pts;
+        trend(ui, pts, period, &cx, trend_h - 28.0);
+        ui.add_space(10.0);
+        let hh = low_h - 28.0;
+        ui.columns(4, |c| {
+            day_dial(&mut c[0], pts, period, &cx, hh);
+            hourly_profile(&mut c[1], pts, period, &cx, hh);
+            range_waffle(&mut c[2], pts, &cx, hh);
+            block_bars(&mut c[3], pts, period, &cx, hh);
         });
     }
 
@@ -807,50 +768,78 @@ impl AccuChekApp {
             &mut v,
             &[
                 (ChartView::Trend, "Trend"),
+                (ChartView::Bands, "Time bands"),
                 (ChartView::Profile, "Time of day"),
+                (ChartView::Daily, "Day by day"),
                 (ChartView::Distribution, "Distribution"),
-                (ChartView::Daily, "Daily"),
                 (ChartView::Calendar, "Calendar"),
             ],
         );
         self.current_chart_view = v;
-        ui.add_space(12.0);
+        ui.add_space(10.0);
+        let rest = (self.viewport_h - 30.0 - 10.0 - 26.0).max(520.0);
+        let pts = &self.pts;
         let days_tail = &self.days[self.days.len().saturating_sub(60)..];
+        let weeks = group_weeks(&self.days);
+        let weeks_tail = &weeks[weeks.len().saturating_sub(16)..];
 
         match v {
             ChartView::Trend => {
-                trend(ui, &self.pts, period, &cx, 360.0);
-                ui.add_space(12.0);
-                daily_spread(ui, days_tail, period, &cx, 240.0);
-            }
-            ChartView::Profile => {
-                hourly_profile(ui, &self.pts, period, &cx, 300.0);
-                ui.add_space(12.0);
-                heatmap(ui, &self.pts, period, &cx);
-                ui.add_space(12.0);
-                time_blocks(ui, &self.pts, period, &cx, 280.0);
-            }
-            ChartView::Distribution => {
-                distribution(ui, &self.pts, period, &cx, 320.0);
-                ui.add_space(12.0);
-                plate().show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    label(ui, &format!("Sampled range  {}  N={}", period, self.pts.len()));
-                    ui.add_space(4.0);
-                    sampled_range(ui, &self.pts, &cx);
+                let h1 = rest * 0.5;
+                trend(ui, pts, period, &cx, h1 - 28.0);
+                ui.add_space(10.0);
+                let h2 = (rest - h1 - 10.0 - 28.0).max(220.0);
+                ui.columns(3, |c| {
+                    weekly_composition(&mut c[0], weeks_tail, period, h2);
+                    daily_composition(&mut c[1], days_tail, period, &cx, h2);
+                    daily_spread(&mut c[2], days_tail, period, &cx, h2);
                 });
-                if let Some(s) = summarize(&self.pts, &cx) {
-                    ui.add_space(8.0);
-                    evidence(ui, &format!(
-                        "{}   N={}   MEAN {}   MEDIAN {}   IQR {}-{}   SD {}   RANGE {}-{}   {}",
-                        period, s.n, cx.fmt(s.mean), cx.fmt(s.median), cx.fmt(s.q1), cx.fmt(s.q3), cx.fmt(s.sd), cx.fmt(s.min), cx.fmt(s.max), cx.unit_label()
-                    ));
+            }
+            ChartView::Bands => {
+                let bands = infer_bands(pts);
+                if bands.len() < 2 {
+                    ui.label(egui::RichText::new("-").font(mono(12.0)).color(ink_muted()));
+                } else {
+                    band_timeline(ui, pts, &bands, 130.0);
+                    ui.add_space(10.0);
+                    band_cards(ui, pts, &bands, &cx, 246.0);
+                    ui.add_space(10.0);
+                    let h3 = (rest - 130.0 - 28.0 - 246.0 - 20.0 - 28.0).max(200.0);
+                    ui.columns(3, |c| {
+                        band_boxes(&mut c[0], pts, &bands, &cx, h3);
+                        band_bars(&mut c[1], pts, &bands, &cx, h3);
+                        band_week(&mut c[2], pts, &bands, &cx, h3);
+                    });
                 }
             }
+            ChartView::Profile => {
+                let h1 = rest * 0.5 - 28.0;
+                ui.columns(2, |c| {
+                    day_dial(&mut c[0], pts, period, &cx, h1);
+                    hourly_profile(&mut c[1], pts, period, &cx, h1);
+                });
+                ui.add_space(10.0);
+                let h2 = (rest - h1 - 28.0 * 2.0 - 10.0).max(220.0);
+                ui.columns(3, |c| {
+                    heatmap(&mut c[0], pts, period, &cx, h2);
+                    block_bars(&mut c[1], pts, period, &cx, h2);
+                    time_blocks(&mut c[2], pts, period, &cx, h2);
+                });
+            }
             ChartView::Daily => {
-                daily_composition(ui, days_tail, period, &cx, 300.0);
-                ui.add_space(12.0);
-                daily_spread(ui, days_tail, period, &cx, 280.0);
+                punch_card(ui, pts, period, &cx);
+                ui.add_space(10.0);
+                ui.columns(2, |c| {
+                    daily_composition(&mut c[0], days_tail, period, &cx, 240.0);
+                    daily_spread(&mut c[1], days_tail, period, &cx, 240.0);
+                });
+            }
+            ChartView::Distribution => {
+                let h1 = rest - 28.0;
+                ui.columns(2, |c| {
+                    distribution(&mut c[0], pts, period, &cx, h1);
+                    range_waffle(&mut c[1], pts, &cx, h1);
+                });
             }
             ChartView::Calendar => {
                 calendar(ui, &self.days, period, &cx);
@@ -861,88 +850,99 @@ impl AccuChekApp {
     // ----- Reports -----
 
     fn show_reports(&mut self, ui: &mut egui::Ui) {
-        label(ui, "Reports");
-        ui.label(egui::RichText::new("Export a printable summary").font(sans(26.0)));
-        ui.add_space(12.0);
-        let cx = self.cx();
-        plate().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            label(ui, "Configuration");
-            ui.add_space(6.0);
-            evidence(ui, &format!("UNIT {}   RANGE {}   N={} READINGS", cx.unit_label(), cx.th.format_range(cx.unit), self.data.readings.len()));
-            if let (Some(a), Some(b)) = (self.data.readings.first(), self.data.readings.last()) {
-                evidence(ui, &format!("SPAN {}  TO  {}", a.timestamp.get(0..10).unwrap_or(""), b.timestamp.get(0..10).unwrap_or("")));
-            }
-            ui.add_space(12.0);
-            if key(ui, "EXPORT PDF", true, !self.data.readings.is_empty()) {
-                self.export_pdf();
-            }
-        });
+        ui.add_space(8.0);
+        if key(ui, "EXPORT PDF", true, !self.data.readings.is_empty()) {
+            self.export_pdf();
+        }
     }
 
     // ----- Readings -----
 
     fn show_readings(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            label(ui, "Search");
-            ui.add(egui::TextEdit::singleline(&mut self.search_query).hint_text("date, value, note or tag").desired_width(280.0));
+            ui.add(egui::TextEdit::singleline(&mut self.search_query).hint_text("search").desired_width(260.0));
             if key(ui, "CLEAR", false, !self.search_query.is_empty()) {
                 self.search_query.clear();
             }
         });
-        ui.add_space(8.0);
+        ui.add_space(4.0);
 
         let th = self.settings.thresholds;
         let unit = self.settings.glucose_unit;
-        let rows: Vec<(String, u16, f64, bool, bool)> = self
+        let rows: Vec<(String, u16, f64, Option<String>, Option<String>)> = self
             .filtered_readings()
             .iter()
             .rev()
-            .map(|r| (r.timestamp.replace('T', " "), r.mg_dl, r.mmol_l, r.note.is_some(), r.tags.is_some()))
+            .map(|r| (r.timestamp.replace('T', " "), r.mg_dl, r.mmol_l, r.note.clone(), r.tags.clone()))
             .collect();
         if rows.is_empty() {
-            ui.label(egui::RichText::new("NO READINGS MATCH").font(mono(11.0)).color(INK_MUTED));
+            ui.label(egui::RichText::new("-").font(mono(11.0)).color(ink_muted()));
             return;
         }
-        evidence(ui, &format!("{} READINGS  NEWEST FIRST", rows.len()));
-        ui.add_space(4.0);
+        let max_mg = rows.iter().map(|r| r.1).max().unwrap_or(250).max(th.high_mgdl + 20) as f32;
+        let min_mg = 40.0f32;
 
-        let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), egui::Sense::hover());
-        for (x, t) in [(12.0, "METER TIME"), (220.0, unit.label()), (330.0, "STATUS"), (460.0, "MARKS")] {
-            ui.painter().text(hr.left_center() + vec2(x, 0.0), egui::Align2::LEFT_CENTER, t.to_uppercase(), mono(10.0), INK_MUTED);
+        // column layout as fractions of the table width
+        let total_w = ui.available_width() - 12.0;
+        let x_date = 0.0;
+        let x_time = total_w * 0.095;
+        let x_val = total_w * 0.165;
+        let x_bar = total_w * 0.235;
+        let x_stat = total_w * 0.50;
+        let x_tags = total_w * 0.60;
+        let x_note = total_w * 0.73;
+
+        let (hr, _) = ui.allocate_exact_size(vec2(total_w, 22.0), egui::Sense::hover());
+        for (x, t) in [(x_date, "DATE"), (x_time, "TIME"), (x_val, unit.label()), (x_stat, "STATUS"), (x_tags, "TAGS"), (x_note, "NOTE")] {
+            ui.painter().text(hr.left_center() + vec2(x + 10.0, 0.0), egui::Align2::LEFT_CENTER, t, mono(9.5), ink_muted());
         }
-        ui.painter().line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, RULE));
+        ui.painter().text(hr.left_center() + vec2(x_bar + 10.0, 0.0), egui::Align2::LEFT_CENTER, format!("{}", rows.len()), mono(9.5), ink_muted());
+        ui.painter().line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, rule()));
 
         let mut clicked: Option<usize> = None;
         let selected = self.selected_reading;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 28.0, rows.len(), |ui, range| {
+        let row_h = 25.0;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, range| {
             for i in range {
                 let (ts, mg, mmol, note, tags) = &rows[i];
-                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), egui::Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(vec2(total_w, row_h), egui::Sense::click());
                 let sel = selected == Some(i);
                 if sel {
-                    ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(0x3A, 0x36, 0x2E));
-                    ui.painter().rect_filled(Rect::from_min_size(rect.min, vec2(3.0, rect.height())), 0.0, TANGERINE);
+                    ui.painter().rect_filled(rect, 0.0, sel_bg());
+                    ui.painter().rect_filled(Rect::from_min_size(rect.min, vec2(3.0, rect.height())), 0.0, tangerine());
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(0x30, 0x30, 0x2F));
+                    ui.painter().rect_filled(rect, 0.0, hover_bg());
                 } else if i % 2 == 1 {
-                    ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(0x2F, 0x2F, 0x2E));
+                    ui.painter().rect_filled(rect, 0.0, stripe_bg());
                 }
                 let cl = th.classify(*mg);
                 let c = range_color(cl);
                 let p = ui.painter();
-                p.text(rect.left_center() + vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, ts, mono(12.0), INK_DIM);
-                p.text(rect.left_center() + vec2(220.0, 0.0), egui::Align2::LEFT_CENTER, unit.format_value(*mg, *mmol), sans(15.0), c);
-                p.circle_filled(rect.left_center() + vec2(334.0, 0.0), 3.5, c);
-                p.text(rect.left_center() + vec2(346.0, 0.0), egui::Align2::LEFT_CENTER, class_name(cl), mono(10.5), c);
-                let mut marks = String::new();
-                if *note {
-                    marks.push_str("NOTE ");
+                let mid = rect.left_center();
+                let (date, time) = (ts.get(0..10).unwrap_or(""), ts.get(11..16).unwrap_or(""));
+                p.text(mid + vec2(x_date + 10.0, 0.0), egui::Align2::LEFT_CENTER, date, mono(11.5), ink_dim());
+                p.text(mid + vec2(x_time + 10.0, 0.0), egui::Align2::LEFT_CENTER, time, mono(11.5), ink_dim());
+                p.text(mid + vec2(x_val + 10.0, 0.0), egui::Align2::LEFT_CENTER, unit.format_value(*mg, *mmol), sans(15.0), c);
+                // data bar with low/high ticks
+                let bx0 = rect.left() + x_bar + 10.0;
+                let bx1 = rect.left() + x_stat - 14.0;
+                let track = Rect::from_min_max(pos2(bx0, rect.center().y - 3.0), pos2(bx1, rect.center().y + 3.0));
+                p.rect_filled(track, 0.0, rule_soft());
+                let fx = |v: f32| bx0 + (bx1 - bx0) * ((v - min_mg) / (max_mg - min_mg)).clamp(0.0, 1.0);
+                p.rect_filled(Rect::from_min_max(track.min, pos2(fx(*mg as f32), track.max.y)), 0.0, c);
+                for t in [th.low_mgdl as f32, th.high_mgdl as f32] {
+                    p.line_segment([pos2(fx(t), rect.center().y - 7.0), pos2(fx(t), rect.center().y + 7.0)], Stroke::new(1.0, alpha(paper(), 90)));
                 }
-                if *tags {
-                    marks.push_str("TAG");
+                p.circle_filled(mid + vec2(x_stat + 14.0, 0.0), 3.5, c);
+                p.text(mid + vec2(x_stat + 26.0, 0.0), egui::Align2::LEFT_CENTER, class_name(cl), mono(10.5), c);
+                if let Some(t) = tags {
+                    let clip = Rect::from_min_max(pos2(rect.left() + x_tags + 10.0, rect.top()), pos2(rect.left() + x_note - 6.0, rect.bottom()));
+                    p.with_clip_rect(clip).text(clip.left_center(), egui::Align2::LEFT_CENTER, t, mono(10.5), raspberry());
                 }
-                p.text(rect.left_center() + vec2(460.0, 0.0), egui::Align2::LEFT_CENTER, marks, mono(10.5), RASPBERRY);
+                if let Some(n) = note {
+                    let clip = Rect::from_min_max(pos2(rect.left() + x_note + 10.0, rect.top()), pos2(rect.right() - 6.0, rect.bottom()));
+                    p.with_clip_rect(clip).text(clip.left_center(), egui::Align2::LEFT_CENTER, n, sans(12.5), ink_dim());
+                }
                 if resp.clicked() {
                     clicked = Some(i);
                 }
@@ -969,7 +969,7 @@ impl AccuChekApp {
         });
         let Some((id, ts, mg, mmol, imported, raw, status)) = sel else {
             ui.add_space(40.0);
-            ui.label(egui::RichText::new("SELECT A ROW").font(mono(11.0)).color(INK_MUTED));
+            ui.label(egui::RichText::new("SELECT A ROW").font(mono(11.0)).color(ink_muted()));
             return;
         };
         let cl = self.settings.thresholds.classify(mg);
@@ -1007,8 +1007,8 @@ impl AccuChekApp {
     }
 }
 
-fn metric(ui: &mut egui::Ui, name: &str, value: &str, unit: &str, sub: &str, accent: Color32) {
-    plate().show(ui, |ui| {
+fn metric(ui: &mut egui::Ui, name: &str, value: &str, unit: &str, sub: &str, accent: Color32, trace: &[f64], is_bullet: bool) {
+    plate_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(3.0, 10.0), egui::Sense::hover());
@@ -1017,9 +1017,35 @@ fn metric(ui: &mut egui::Ui, name: &str, value: &str, unit: &str, sub: &str, acc
         });
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(value).font(sans(30.0)));
-            ui.label(egui::RichText::new(unit).font(mono(11.0)).color(INK_DIM));
+            ui.label(egui::RichText::new(unit).font(mono(11.0)).color(ink_dim()));
         });
-        ui.label(egui::RichText::new(sub).font(mono(10.0)).color(INK_MUTED));
+        ui.label(egui::RichText::new(sub).font(mono(10.0)).color(ink_muted()));
+        if is_bullet && trace.len() == 5 {
+            bullet(ui, [trace[0], trace[1], trace[2], trace[3], trace[4]], accent, 34.0);
+        } else if trace.len() >= 2 {
+            spark(ui, trace, accent, 34.0);
+        } else {
+            ui.add_space(34.0);
+        }
+    });
+}
+
+/// Two side-by-side regions with a fixed fraction of the width.
+fn split(ui: &mut egui::Ui, frac: f32, left: impl FnOnce(&mut egui::Ui), right: impl FnOnce(&mut egui::Ui)) {
+    let gap = 12.0;
+    let total = ui.available_width();
+    let lw = (total - gap) * frac;
+    let rw = total - gap - lw;
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.allocate_ui_with_layout(vec2(lw, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_width(lw);
+            left(ui);
+        });
+        ui.allocate_ui_with_layout(vec2(rw, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_width(rw);
+            right(ui);
+        });
     });
 }
 
